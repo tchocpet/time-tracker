@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const API = axios.create({
-  baseURL: 'http://localhost:5000', // Backend base URL
+  baseURL: 'https://sadakk.netlify.app/', // Backend base URL
 });
 
 // Add a request interceptor to include the token in headers
