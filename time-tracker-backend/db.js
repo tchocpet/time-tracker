@@ -15,6 +15,7 @@ const pool = new Pool({
   connectionTimeoutMillis: 10000, // 10 seconds
   idleTimeoutMillis: 30000,
   max: 20,
+  family: 4,
 });
 
 // Test connection on startup
