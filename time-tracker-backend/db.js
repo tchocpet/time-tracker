@@ -1,19 +1,3 @@
-// import mariadb from 'mariadb';
-// import dotenv from 'dotenv';
-
-// // Load environment variables from .env file
-// dotenv.config();
-
-// const pool = mariadb.createPool({
-//   host: process.env.DB_HOST,
-//   user: process.env.DB_USER,
-//   password: process.env.DB_PASSWORD,
-//   database: process.env.DB_NAME,
-//   connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT, 10), // Convert to integer
-// });
-
-// export default pool;
-
 import pkg from 'pg';
 const { Pool } = pkg;
 import dotenv from 'dotenv';
@@ -25,11 +9,23 @@ const pool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  port: 5432,
-  ssl: { rejectUnauthorized: false }, // Required for Supabase
+  port: process.env.DB_PORT || 5432,
+  ssl: { rejectUnauthorized: false },
+  // Add these for faster timeout on local dev
+  connectionTimeoutMillis: 10000, // 10 seconds
+  idleTimeoutMillis: 30000,
+  max: 20,
 });
 
-// Wrapper to mimic MariaDB pool interface
+// Test connection on startup
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle client', err);
+});
+
+pool.on('connect', () => {
+  console.log('✓ Connected to Supabase PostgreSQL');
+});
+
 export default {
   getConnection: async () => {
     const client = await pool.connect();
