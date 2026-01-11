@@ -8,28 +8,20 @@ import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import { sendEmail } from './emailService.js';
 
-dotenv.config();
+dotenv.config(); // Load environment variables from .env
 
 const app = express();
-app.set('trust proxy', 1);
-
-const PORT = process.env.PORT || 5000;
-let FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
-
-// Remove trailing slash from FRONTEND_URL to avoid CORS mismatch
-FRONTEND_URL = FRONTEND_URL.replace(/\/$/, '');
-
-// Trust proxy for Render
+const PORT = 5000;
 
 app.use(express.json());
 
-const refreshTokens = [];
+const refreshTokens = []; // Store refresh tokens (in-memory for now)
 
-// Enable CORS with dynamic frontend URL
+// Enable CORS
 app.use(cors({
-  origin: FRONTEND_URL,
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  credentials: true,
+  origin: 'http://localhost:5173', // Replace with your frontend's origin
+  methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allowed HTTP methods
+  credentials: true, // Allow cookies and credentials
 }));
 
 // Role-based authorization middleware
@@ -43,10 +35,9 @@ function authorizeRole(role) {
 }
 
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // Limit each IP to 10 login attempts per window
   message: 'Too many login attempts. Please try again later.',
-  skip: (req) => req.ip === '127.0.0.1', // Skip localhost
 });
 
 // Login API Endpoint
@@ -59,7 +50,7 @@ app.post('/api/login', loginLimiter, async (req, res) => {
 
   try {
     const conn = await pool.getConnection();
-    const rows = await conn.query('SELECT * FROM users WHERE email = $1', [email]);
+    const rows = await conn.query('SELECT * FROM users WHERE email = ?', [email]);
     conn.release();
 
     if (rows.length === 0) {
@@ -69,23 +60,23 @@ app.post('/api/login', loginLimiter, async (req, res) => {
 
     const user = rows[0];
 
+    // Compare the provided password with the hashed password in the database
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       console.error('Invalid password for user:', email);
       return res.status(401).json({ message: 'Invalid email or password.' });
     }
 
+    // Generate access token
     const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role },
+      { id: user.id, email: user.email, role: user.role }, // Include the role field
       process.env.JWT_SECRET,
       { expiresIn: '1h' }
     );
 
-    const refreshToken = jwt.sign(
-      { id: user.id, email: user.email, role: user.role },
-      process.env.JWT_SECRET
-    );
-    refreshTokens.push(refreshToken);
+    // Generate refresh token
+    const refreshToken = jwt.sign({ id: user.id, email: user.email, role: user.role }, process.env.JWT_SECRET);
+    refreshTokens.push(refreshToken); // Store the refresh token
 
     res.status(200).json({ message: 'Login successful.', token, refreshToken });
   } catch (error) {
@@ -140,11 +131,9 @@ app.post('/api/refresh', (req, res) => {
 
   try {
     const user = jwt.verify(token, process.env.JWT_SECRET);
-    const newToken = jwt.sign(
-      { id: user.id, email: user.email, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: '1h' }
-    );
+    const newToken = jwt.sign({ id: user.id, email: user.email, role: user.role }, process.env.JWT_SECRET, {
+      expiresIn: '1h',
+    });
     res.status(200).json({ token: newToken });
   } catch (error) {
     res.status(403).json({ message: 'Invalid refresh token.' });
@@ -161,30 +150,23 @@ app.post('/api/reset-password', async (req, res) => {
 
   try {
     const conn = await pool.getConnection();
-    const rows = await conn.query('SELECT * FROM users WHERE email = $1', [email]);
+    const [user] = await conn.query('SELECT * FROM users WHERE email = ?', [email]);
 
-    if (rows.length === 0) {
+    if (!user) {
       conn.release();
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    const user = rows[0];
+    // Generate a reset token with a 10-minute expiration
+    const resetToken = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '10m' });
 
-    const resetToken = jwt.sign(
-      { id: user.id, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: '10m' }
-    );
-
-    await conn.query('UPDATE users SET reset_token = $1 WHERE email = $2', [resetToken, email]);
+    // Save the reset token in the database
+    await conn.query('UPDATE users SET reset_token = ? WHERE email = ?', [resetToken, email]);
     conn.release();
 
-    const resetLink = `${FRONTEND_URL}/update-password?token=${resetToken}`;
-    await sendEmail(
-      email,
-      'Password Reset Request',
-      `Click the link to reset your password: ${resetLink}. The link is only valid for 10 minutes.`
-    );
+    // Send the reset link via email
+    const resetLink = `http://localhost:5173/update-password?token=${resetToken}`;
+    await sendEmail(email, 'Password Reset Request', `Click the link to reset your password: ${resetLink} , The link is only valid for 10 Minutes.`);
 
     res.status(200).json({ message: 'Password reset link sent to your email.' });
   } catch (error) {
@@ -193,7 +175,6 @@ app.post('/api/reset-password', async (req, res) => {
   }
 });
 
-// Update password route
 app.post('/api/update-password', async (req, res) => {
   const { token, newPassword } = req.body;
 
@@ -202,17 +183,20 @@ app.post('/api/update-password', async (req, res) => {
   }
 
   try {
+    // Verify the reset token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Hash the new password
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
     const conn = await pool.getConnection();
-    const result = await conn.query(
-      'UPDATE users SET password = $1, reset_token = NULL WHERE id = $2',
-      [hashedPassword, decoded.id]
-    );
+    const result = await conn.query('UPDATE users SET password = ?, reset_token = NULL WHERE id = ?', [
+      hashedPassword,
+      decoded.id,
+    ]);
     conn.release();
 
-    if (result.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({ message: 'User not found or token invalid.' });
     }
 
@@ -232,47 +216,45 @@ app.post('/api/log-work', authenticateToken, async (req, res) => {
   }
 
   try {
-    const currentTime = new Date();
+    const currentTime = new Date(); // Generate the timestamp on the server
     const conn = await pool.getConnection();
-    const currentDate = currentTime.toISOString().split('T')[0];
 
-    const existingWorkLog = await conn.query(
-      'SELECT * FROM work_logs WHERE employee_id = $1 AND date = $2',
+    // Check if a work log already exists for the employee and date
+    const currentDate = currentTime.toISOString().split('T')[0];
+    const [existingWorkLog] = await conn.query(
+      'SELECT * FROM work_logs WHERE employee_id = ? AND date = ?',
       [employeeId, currentDate]
     );
 
-    if (existingWorkLog.length > 0) {
-      const workLog = existingWorkLog[0];
+    if (existingWorkLog) {
+      // Update the existing work log based on the action type
       let updatedFields = {};
-
       if (type === 'Start Work') updatedFields.start_time = currentTime;
       if (type === 'Break Start') updatedFields.break_start = currentTime;
       if (type === 'Break End') updatedFields.break_end = currentTime;
       if (type === 'Finish Work') updatedFields.finish_time = currentTime;
 
-      const keys = Object.keys(updatedFields);
-      const values = Object.values(updatedFields);
-      const setClause = keys.map((key, i) => `${key} = $${i + 1}`).join(', ');
+      // Dynamically construct the SET clause
+      const setClause = Object.keys(updatedFields)
+        .map((key) => `${key} = ?`)
+        .join(', ');
+      const values = [...Object.values(updatedFields), existingWorkLog.id];
 
-      await conn.query(
-        `UPDATE work_logs SET ${setClause} WHERE id = $${keys.length + 1}`,
-        [...values, workLog.id]
-      );
+      await conn.query(`UPDATE work_logs SET ${setClause} WHERE id = ?`, values);
       conn.release();
-
       return res.status(200).json({ message: 'Work log updated successfully.', updatedFields });
     } else {
+      // Create a new work log
       if (type !== 'Start Work') {
         conn.release();
         return res.status(400).json({ message: 'Start Work is required to create a new work log.' });
       }
 
       await conn.query(
-        'INSERT INTO work_logs (employee_id, date, start_time) VALUES ($1, $2, $3)',
+        'INSERT INTO work_logs (employee_id, date, start_time) VALUES (?, ?, ?)',
         [employeeId, currentDate, currentTime]
       );
       conn.release();
-
       return res.status(200).json({ message: 'Work log created successfully.', start_time: currentTime });
     }
   } catch (error) {
@@ -281,13 +263,13 @@ app.post('/api/log-work', authenticateToken, async (req, res) => {
   }
 });
 
-// Get work logs by employee ID
+// Get work logs route
 app.get('/api/work-logs/:employeeId', authenticateToken, async (req, res) => {
   const { employeeId } = req.params;
 
   try {
     const conn = await pool.getConnection();
-    const rows = await conn.query('SELECT * FROM work_logs WHERE employee_id = $1', [employeeId]);
+    const rows = await conn.query('SELECT * FROM work_logs WHERE employee_id = ?', [employeeId]);
     conn.release();
 
     res.status(200).json(rows);
@@ -297,13 +279,15 @@ app.get('/api/work-logs/:employeeId', authenticateToken, async (req, res) => {
   }
 });
 
-// Get all work logs (admin)
 app.get('/api/work-logs', authenticateToken, async (req, res) => {
+  console.log('GET /api/work-logs triggered'); // Debugging log
+
   try {
     const conn = await pool.getConnection();
-    const rows = await conn.query('SELECT * FROM work_logs');
+    const rows = await conn.query('SELECT * FROM work_logs'); // Fetch all work logs
     conn.release();
 
+    console.log('Work logs fetched:', rows); // Debugging log
     res.status(200).json(rows);
   } catch (error) {
     console.error('Error fetching work logs:', error);
@@ -311,7 +295,6 @@ app.get('/api/work-logs', authenticateToken, async (req, res) => {
   }
 });
 
-// Update work log
 app.put('/api/work-logs/:id', async (req, res) => {
   const { id } = req.params;
   const { start_time, break_start, break_end, finish_time } = req.body;
@@ -319,23 +302,29 @@ app.put('/api/work-logs/:id', async (req, res) => {
   try {
     const conn = await pool.getConnection();
 
-    const existingWorkLog = await conn.query('SELECT * FROM work_logs WHERE id = $1', [id]);
-    if (existingWorkLog.length === 0) {
+    // Fetch the existing work log
+    const [existingWorkLog] = await conn.query('SELECT * FROM work_logs WHERE id = ?', [id]);
+    if (!existingWorkLog) {
       conn.release();
       return res.status(404).json({ error: 'Work log not found' });
     }
 
-    const workLog = existingWorkLog[0];
-    const updatedStartTime = start_time !== undefined ? start_time : workLog.start_time;
-    const updatedBreakStart = break_start !== undefined ? break_start : workLog.break_start;
-    const updatedBreakEnd = break_end !== undefined ? break_end : workLog.break_end;
-    const updatedFinishTime = finish_time !== undefined ? finish_time : workLog.finish_time;
+    // Use existing values if fields are not provided in the request
+    const updatedStartTime = start_time !== undefined ? start_time : existingWorkLog.start_time;
+    const updatedBreakStart = break_start !== undefined ? break_start : existingWorkLog.break_start;
+    const updatedBreakEnd = break_end !== undefined ? break_end : existingWorkLog.break_end;
+    const updatedFinishTime = finish_time !== undefined ? finish_time : existingWorkLog.finish_time;
 
-    await conn.query(
-      'UPDATE work_logs SET start_time = $1, break_start = $2, break_end = $3, finish_time = $4 WHERE id = $5',
+    // Update the work log
+    const result = await conn.query(
+      'UPDATE work_logs SET start_time = ?, break_start = ?, break_end = ?, finish_time = ? WHERE id = ?',
       [updatedStartTime, updatedBreakStart, updatedBreakEnd, updatedFinishTime, id]
     );
     conn.release();
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Work log not found' });
+    }
 
     res.status(200).json({ message: 'Work log updated successfully.' });
   } catch (error) {
@@ -344,13 +333,13 @@ app.put('/api/work-logs/:id', async (req, res) => {
   }
 });
 
-// Get work logs for authenticated employee
+// Get work logs for the authenticated employee
 app.get('/api/employee/work-logs', authenticateToken, async (req, res) => {
-  const employeeId = req.user.id;
+  const employeeId = req.user.id; // Extract employee ID from the authenticated user's token
 
   try {
     const conn = await pool.getConnection();
-    const rows = await conn.query('SELECT * FROM work_logs WHERE employee_id = $1', [employeeId]);
+    const rows = await conn.query('SELECT * FROM work_logs WHERE employee_id = ?', [employeeId]);
     conn.release();
 
     res.status(200).json(rows);
@@ -360,22 +349,24 @@ app.get('/api/employee/work-logs', authenticateToken, async (req, res) => {
   }
 });
 
-// Get current day work log for authenticated employee
+// Fetch current work log for the day
 app.get('/api/work-log', authenticateToken, async (req, res) => {
-  const employeeId = req.user.id;
+  const { id: employeeId } = req.user; // Extract employee ID from the token
 
   try {
-    const currentDate = new Date().toISOString().split('T')[0];
+    const currentDate = new Date().toISOString().split('T')[0]; // Get today's date
     const conn = await pool.getConnection();
 
-    const workLog = await conn.query(
-      'SELECT * FROM work_logs WHERE employee_id = $1 AND date = $2',
+    // Fetch the work log for the current day
+    const [workLog] = await conn.query(
+      'SELECT * FROM work_logs WHERE employee_id = ? AND date = ?',
       [employeeId, currentDate]
     );
+
     conn.release();
 
-    if (workLog.length > 0) {
-      return res.status(200).json(workLog[0]);
+    if (workLog) {
+      return res.status(200).json(workLog); // Return the work log if it exists
     } else {
       return res.status(404).json({ message: 'No work log found for today.' });
     }
@@ -393,5 +384,6 @@ app.use((err, req, res, next) => {
 
 // Start the server
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  console.log(`Server is running on http://localhost:${PORT}`);
 });
+
