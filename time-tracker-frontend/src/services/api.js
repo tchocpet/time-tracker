@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const baseURL = import.meta.env.VITE_API_URL || 'https://time-tracker-4g19.onrender.com';
+const baseURL = import.meta.env.VITE_API_URL || 'https://time-tracker-1h93.onrender.com';
 
 const API = axios.create({ baseURL });
 
